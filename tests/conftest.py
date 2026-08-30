@@ -3,20 +3,20 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app import crud
+from app.auth import create_access_token
 from app.database import get_db
 from app.main import app
 from app.models import Base
+from app.schemas import UserCreate
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+psycopg://appuser:devpassword@localhost:5433/appdb_week4_test",
 )
-
-
-API_KEY = os.getenv("API_KEY", "dev-secret-key")
 
 
 @pytest.fixture(scope="session")
@@ -49,6 +49,7 @@ def db(engine):
 @pytest.fixture
 def client(db):
     """A TestClient whose endpoints use the rolled-back test session."""
+
     def override_get_db():
         yield db
 
@@ -59,5 +60,15 @@ def client(db):
 
 
 @pytest.fixture
-def auth_headers():
-    return {"X-API-Key": API_KEY}
+def test_user(db):
+    """A registered, active user."""
+    return crud.create_user(
+        db, UserCreate(email="tester@example.com", password="testpassword123")
+    )
+
+
+@pytest.fixture
+def auth_headers(client, test_user):
+    """Bearer token header for the test user."""
+    token = create_access_token(test_user.id)
+    return {"Authorization": f"Bearer {token}"}

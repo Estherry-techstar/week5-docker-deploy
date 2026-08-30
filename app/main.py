@@ -16,7 +16,6 @@ from app.schemas import (
     UserCreate,
     UserRead,
 )
-from app.security import require_api_key
 
 app = FastAPI(
     title="Candidate Tracker API",
@@ -27,7 +26,10 @@ app = FastAPI(
 
 @app.get("/health", tags=["meta"])
 def health(db: Session = Depends(get_db)) -> dict:
-    """Cheap endpoint so CI / uptime checks can confirm the app booted."""
+    """Cheap endpoint so CI / uptime checks can confirm the app booted.
+
+    Deliberately unauthenticated so monitoring can reach it.
+    """
     return {"status": "ok", "candidates": crud.count(db)}
 
 
@@ -77,7 +79,7 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> UserRea
     response_model=CandidateRead,
     status_code=status.HTTP_201_CREATED,
     tags=["candidates"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(get_current_user)],
 )
 def create_candidate(
     payload: CandidateCreate, db: Session = Depends(get_db)
@@ -94,7 +96,7 @@ def create_candidate(
     "/candidates",
     response_model=list[CandidateRead],
     tags=["candidates"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(get_current_user)],
 )
 def list_candidates(
     stage: Stage | None = Query(default=None, description="Filter by stage"),
@@ -112,7 +114,7 @@ def list_candidates(
     "/candidates/{candidate_id}",
     response_model=CandidateRead,
     tags=["candidates"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(get_current_user)],
 )
 def get_candidate(candidate_id: int, db: Session = Depends(get_db)) -> CandidateRead:
     candidate = crud.get(db, candidate_id)
@@ -128,7 +130,7 @@ def get_candidate(candidate_id: int, db: Session = Depends(get_db)) -> Candidate
     "/candidates/{candidate_id}",
     response_model=CandidateRead,
     tags=["candidates"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(get_current_user)],
 )
 def update_candidate(
     candidate_id: int, payload: CandidateUpdate, db: Session = Depends(get_db)
@@ -151,7 +153,7 @@ def update_candidate(
     "/candidates/{candidate_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["candidates"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(get_current_user)],
 )
 def delete_candidate(candidate_id: int, db: Session = Depends(get_db)) -> Response:
     if not crud.delete(db, candidate_id):

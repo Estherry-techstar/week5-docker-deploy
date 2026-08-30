@@ -39,16 +39,24 @@ class TestAuthentication:
             ("delete", "/candidates/1"),
         ],
     )
-    def test_rejects_missing_api_key(self, client, method, path):
+    def test_rejects_missing_token(self, client, method, path):
         response = getattr(client, method)(path)
 
         assert response.status_code == 401
 
-    def test_rejects_wrong_api_key(self, client):
-        response = client.get("/candidates", headers={"X-API-Key": "wrong-key"})
+    def test_rejects_malformed_token(self, client):
+        response = client.get(
+            "/candidates", headers={"Authorization": "Bearer not-a-real-token"}
+        )
 
         assert response.status_code == 401
-        assert response.json()["detail"] == "Invalid or missing API key."
+        assert response.json()["detail"] == "Could not validate credentials."
+
+    def test_rejects_api_key(self, client):
+        """The old API key auth was removed; it must no longer grant access."""
+        response = client.get("/candidates", headers={"X-API-Key": "dev-secret-key"})
+
+        assert response.status_code == 401
 
 
 class TestCreateEndpoint:

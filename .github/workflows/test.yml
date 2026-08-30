@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: appuser
+          POSTGRES_PASSWORD: devpassword
+          POSTGRES_DB: appdb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U appuser -d appdb_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: appdb_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      API_KEY: dev-secret-key
+      TEST_DATABASE_URL: postgresql+psycopg://appuser:devpassword@localhost:5432/appdb_test
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify migrations apply cleanly
+        run: alembic upgrade head
+
+      - name: Verify migrations reverse cleanly
+        run: alembic downgrade base
+
+      - name: Reapply migrations
+        run: alembic upgrade head
+
+      - name: Run tests
+        run: pytest -v --cov=app --cov-report=term-missing

@@ -1,0 +1,63 @@
+"""Shared pytest fixtures: an isolated database that resets between tests."""
+import os
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
+from app.database import get_db
+from app.main import app
+from app.models import Base
+
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "postgresql+psycopg://appuser:devpassword@localhost:5433/appdb_week4_test",
+)
+
+
+API_KEY = os.getenv("API_KEY", "dev-secret-key")
+
+
+@pytest.fixture(scope="session")
+def engine():
+    """One engine for the whole test run. Creates the schema once."""
+    eng = create_engine(TEST_DATABASE_URL)
+    Base.metadata.drop_all(bind=eng)
+    Base.metadata.create_all(bind=eng)
+    yield eng
+    Base.metadata.drop_all(bind=eng)
+    eng.dispose()
+
+
+@pytest.fixture
+def db(engine):
+    """A session wrapped in a transaction that is always rolled back."""
+    connection = engine.connect()
+    transaction = connection.begin()
+    Session = sessionmaker(bind=connection)
+    session = Session()
+
+    yield session
+
+    session.close()
+    if transaction.is_active:
+        transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def client(db):
+    """A TestClient whose endpoints use the rolled-back test session."""
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def auth_headers():
+    return {"X-API-Key": API_KEY}

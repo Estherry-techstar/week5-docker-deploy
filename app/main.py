@@ -1,17 +1,27 @@
 """FastAPI application: the front desk that receives HTTP requests."""
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app import crud
+from app.auth import create_access_token
 from app.database import get_db
-from app.models import Stage
-from app.schemas import CandidateCreate, CandidateRead, CandidateUpdate
+from app.dependencies import get_current_user
+from app.models import Stage, User
+from app.schemas import (
+    CandidateCreate,
+    CandidateRead,
+    CandidateUpdate,
+    Token,
+    UserCreate,
+    UserRead,
+)
 from app.security import require_api_key
 
 app = FastAPI(
     title="Candidate Tracker API",
-    description="PostgreSQL-backed CRUD service for tracking job candidates.",
-    version="2.0.0",
+    description="PostgreSQL-backed CRUD service with JWT authentication.",
+    version="3.0.0",
 )
 
 
@@ -19,6 +29,47 @@ app = FastAPI(
 def health(db: Session = Depends(get_db)) -> dict:
     """Cheap endpoint so CI / uptime checks can confirm the app booted."""
     return {"status": "ok", "candidates": crud.count(db)}
+
+
+# --- auth ------------------------------------------------------------------
+
+
+@app.post(
+    "/auth/signup",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["auth"],
+)
+def signup(payload: UserCreate, db: Session = Depends(get_db)) -> UserRead:
+    if crud.get_user_by_email(db, payload.email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with that email already exists.",
+        )
+    return crud.create_user(db, payload)
+
+
+@app.post("/auth/login", response_model=Token, tags=["auth"])
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+) -> Token:
+    user = crud.authenticate_user(db, form_data.username, form_data.password)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return Token(access_token=create_access_token(user.id))
+
+
+@app.get("/auth/me", response_model=UserRead, tags=["auth"])
+def read_current_user(current_user: User = Depends(get_current_user)) -> UserRead:
+    return current_user
+
+
+# --- candidates ------------------------------------------------------------
 
 
 @app.post(

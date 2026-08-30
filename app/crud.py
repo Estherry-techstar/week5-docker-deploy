@@ -1,8 +1,13 @@
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Candidate
-from app.schemas import CandidateCreate, CandidateUpdate
+from app.auth import hash_password, verify_password
+from app.models import Candidate, User
+from app.schemas import CandidateCreate, CandidateUpdate, UserCreate
+
+# A pre-computed hash of a throwaway password. Used to keep failed logins
+# taking the same time whether or not the email exists.
+DUMMY_HASH = hash_password("dummy-password-for-timing-consistency")
 
 
 def email_exists(db: Session, email: str, exclude_id: int | None = None) -> bool:
@@ -71,3 +76,50 @@ def delete(db: Session, candidate_id: int) -> bool:
     db.delete(candidate)
     db.commit()
     return True
+
+
+# --- users -----------------------------------------------------------------
+
+
+def get_user_by_email(db: Session, email: str) -> User | None:
+    """Look up a user by email, case-insensitively."""
+    stmt = select(User).where(func.lower(User.email) == email.lower())
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def get_user(db: Session, user_id: int) -> User | None:
+    return db.get(User, user_id)
+
+
+def create_user(db: Session, payload: UserCreate) -> User:
+    """Create a user, storing only the bcrypt hash of the password."""
+    user = User(
+        email=payload.email.lower(),
+        hashed_password=hash_password(payload.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def authenticate_user(db: Session, email: str, password: str) -> User | None:
+    """Return the user if the credentials are valid, otherwise None.
+
+    Always runs a password verification, even when the email is unknown, so
+    that the response time does not reveal whether an account exists.
+    """
+    user = get_user_by_email(db, email)
+
+    if user is None:
+        # Dummy verification against a real hash to keep timing consistent.
+        verify_password(password, DUMMY_HASH)
+        return None
+
+    if not verify_password(password, user.hashed_password):
+        return None
+
+    if not user.is_active:
+        return None
+
+    return user

@@ -9,6 +9,10 @@ Name = Annotated[str, Field(min_length=2, max_length=80)]
 Role = Annotated[str, Field(min_length=2, max_length=80)]
 Years = Annotated[int, Field(ge=0, le=60)]
 
+# bcrypt silently ignores anything past 72 bytes, so we reject it at the boundary
+# rather than letting it reach the hashing layer.
+Password = Annotated[str, Field(min_length=8, max_length=72)]
+
 
 class CandidateBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -49,3 +53,30 @@ class CandidateRead(CandidateBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class UserCreate(BaseModel):
+    """Body the client sends on signup."""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    email: EmailStr
+    password: Password
+
+
+class UserRead(BaseModel):
+    """What the API sends back about a user. Deliberately excludes the hash."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: EmailStr
+    is_active: bool
+    created_at: datetime
+
+
+class Token(BaseModel):
+    """OAuth2-shaped token response."""
+
+    access_token: str
+    token_type: str = "bearer"

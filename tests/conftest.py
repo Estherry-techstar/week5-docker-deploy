@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app import crud
 from app.auth import create_access_token
 from app.database import get_db
-from app.main import app
+from app.main import app, limiter
 from app.models import Base
 from app.schemas import UserCreate
 
@@ -17,6 +17,17 @@ TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+psycopg://appuser:devpassword@localhost:5433/appdb_week4_test",
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Give every test a fresh rate-limit allowance.
+
+    Rate-limit state is global and keyed on client IP. Without this, tests
+    would inherit one another's request counts and fail unpredictably.
+    """
+    limiter.reset()
+    yield
 
 
 @pytest.fixture(scope="session")

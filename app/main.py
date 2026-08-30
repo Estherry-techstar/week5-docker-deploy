@@ -1,6 +1,9 @@
 """FastAPI application: the front desk that receives HTTP requests."""
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app import crud
@@ -23,6 +26,13 @@ app = FastAPI(
     version="3.0.0",
 )
 
+# Rate limiting is keyed on client IP. This is a first layer only: it does not
+# stop a distributed attack, and behind a proxy every request appears to come
+# from the proxy unless X-Forwarded-For is handled.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 @app.get("/health", tags=["meta"])
 def health(db: Session = Depends(get_db)) -> dict:
@@ -42,7 +52,10 @@ def health(db: Session = Depends(get_db)) -> dict:
     status_code=status.HTTP_201_CREATED,
     tags=["auth"],
 )
-def signup(payload: UserCreate, db: Session = Depends(get_db)) -> UserRead:
+@limiter.limit("5/hour")
+def signup(
+    request: Request, payload: UserCreate, db: Session = Depends(get_db)
+) -> UserRead:
     if crud.get_user_by_email(db, payload.email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -52,7 +65,9 @@ def signup(payload: UserCreate, db: Session = Depends(get_db)) -> UserRead:
 
 
 @app.post("/auth/login", response_model=Token, tags=["auth"])
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> Token:

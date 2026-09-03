@@ -14,6 +14,16 @@ Years = Annotated[int, Field(ge=0, le=60)]
 Password = Annotated[str, Field(min_length=8, max_length=72)]
 
 
+class MessageResponse(BaseModel):
+    """Generic response body used where the content must not vary by outcome.
+
+    Signup returns this identically whether or not the email was already
+    registered, so the body cannot be used to test for existing accounts.
+    """
+
+    detail: str
+
+
 class CandidateBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 

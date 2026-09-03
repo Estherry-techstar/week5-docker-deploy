@@ -54,14 +54,14 @@ class TestTokens:
 
 
 class TestSignup:
-    def test_creates_user_and_returns_201(self, client):
+    def test_creates_user_and_returns_202(self, client):
+        """202 rather than 201: the duplicate branch has no resource to report."""
         response = client.post(
             "/auth/signup",
             json={"email": "new@example.com", "password": "supersecret123"},
         )
 
-        assert response.status_code == 201
-        assert response.json()["email"] == "new@example.com"
+        assert response.status_code == 202
 
     def test_response_never_includes_the_hash(self, client):
         response = client.post(
@@ -82,13 +82,45 @@ class TestSignup:
         assert user.hashed_password != "supersecret123"
         assert verify_password("supersecret123", user.hashed_password)
 
-    def test_duplicate_email_returns_409(self, client, test_user):
-        response = client.post(
+    def test_duplicate_email_is_indistinguishable_from_a_new_one(
+        self, client, test_user
+    ):
+        """Signup must not reveal whether an email is already registered.
+
+        The two responses are compared to each other rather than to literal
+        values, so this keeps holding if the status code or wording changes.
+        """
+        existing = client.post(
             "/auth/signup",
             json={"email": "tester@example.com", "password": "supersecret123"},
         )
+        fresh = client.post(
+            "/auth/signup",
+            json={"email": "brand-new@example.com", "password": "supersecret123"},
+        )
 
-        assert response.status_code == 409
+        assert existing.status_code == fresh.status_code
+        assert existing.json() == fresh.json()
+
+    def test_duplicate_signup_does_not_change_the_existing_password(
+        self, client, test_user
+    ):
+        """Returning a generic response must not mean quietly overwriting the row.
+
+        If a duplicate signup replaced the stored hash, this endpoint would be
+        account takeover: anyone could reset any account by re-registering it.
+        """
+        client.post(
+            "/auth/signup",
+            json={"email": "tester@example.com", "password": "attacker-chosen-pw"},
+        )
+
+        response = client.post(
+            "/auth/login",
+            data={"username": "tester@example.com", "password": "testpassword123"},
+        )
+
+        assert response.status_code == 200
 
     def test_short_password_returns_422(self, client):
         response = client.post(

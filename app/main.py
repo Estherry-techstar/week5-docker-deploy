@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import crud
@@ -15,6 +16,7 @@ from app.schemas import (
     CandidateCreate,
     CandidateRead,
     CandidateUpdate,
+    MessageResponse,
     Token,
     UserCreate,
     UserRead,
@@ -33,6 +35,13 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Single source of truth for the signup response. Both the "created" and the
+# "already exists" paths return this exact object, so the response body cannot
+# be used to test whether an address is registered.
+SIGNUP_ACCEPTED = MessageResponse(
+    detail="If this email can be registered, you'll receive a confirmation shortly."
+)
+
 
 @app.get("/health", tags=["meta"])
 def health(db: Session = Depends(get_db)) -> dict:
@@ -48,20 +57,47 @@ def health(db: Session = Depends(get_db)) -> dict:
 
 @app.post(
     "/auth/signup",
-    response_model=UserRead,
-    status_code=status.HTTP_201_CREATED,
+    response_model=MessageResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     tags=["auth"],
 )
 @limiter.limit("5/hour")
 def signup(
     request: Request, payload: UserCreate, db: Session = Depends(get_db)
-) -> UserRead:
+) -> MessageResponse:
+    """Register an account without disclosing whether the email already exists.
+
+    Signup is an unauthenticated endpoint, so any observable difference between
+    the "new address" and "already registered" branches lets an attacker test a
+    list of emails against the user table. For a KYC/financial client, mere
+    membership in that table is itself sensitive: it answers "does this person
+    hold an account here?".
+
+    Every branch therefore returns 202 with an identical body and spends
+    comparable time. The information the real user needs -- confirm your
+    account, versus someone tried to register your address -- belongs in an
+    email to that address, which only its owner can read. That notification is
+    not implemented yet; see README for the deferred work.
+    """
     if crud.get_user_by_email(db, payload.email):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An account with that email already exists.",
-        )
-    return crud.create_user(db, payload)
+        # Do not touch the existing row. Overwriting the stored hash here would
+        # turn this endpoint into account takeover. Burn a comparable amount of
+        # time instead, so response latency does not replace the status code as
+        # an existence oracle.
+        crud.dummy_verify()
+        return SIGNUP_ACCEPTED
+
+    try:
+        crud.create_user(db, payload)
+    except IntegrityError:
+        # The check above is check-then-act: two concurrent signups for the same
+        # address both pass it, and the loser hits the unique constraint. Let it
+        # land on the same generic response rather than a 500, which would be a
+        # rarer but equally usable oracle.
+        db.rollback()
+        crud.dummy_verify()
+
+    return SIGNUP_ACCEPTED
 
 
 @app.post("/auth/login", response_model=Token, tags=["auth"])
@@ -99,6 +135,9 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> UserRea
 def create_candidate(
     payload: CandidateCreate, db: Session = Depends(get_db)
 ) -> CandidateRead:
+    # Unlike /auth/signup, this 409 is fine: the route is authenticated, and a
+    # candidate record is tracked data rather than an account, so confirming it
+    # exists does not disclose whether a person banks here.
     if crud.email_exists(db, payload.email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

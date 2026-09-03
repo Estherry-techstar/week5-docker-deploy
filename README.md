@@ -1,204 +1,148 @@
-# Candidate Tracker API
+# Candidate Tracker API — JWT Authentication
 
-![Tests](https://github.com/Estherry-techstar/week3-postgres-api/actions/workflows/test.yml/badge.svg)
+![Tests](https://github.com/Estherry-techstar/week4-jwt-auth/actions/workflows/test.yml/badge.svg)
 
-A CRUD API for tracking job candidates, backed by PostgreSQL with SQLAlchemy and Alembic migrations.
+A CRUD API for tracking job candidates, backed by PostgreSQL, protected by JWT authentication.
 
-This is a migration of an earlier in-memory version. The HTTP contract is unchanged; only the storage layer was replaced.
+This builds on the Week 3 PostgreSQL migration. The shared API key has been replaced with per-user accounts, signed tokens, rate limiting, and non-disclosing error responses.
 
 ## Stack
 
 - **FastAPI** — HTTP layer
-- **PostgreSQL 16** — database, run via Docker Compose
-- **SQLAlchemy 2.0** — ORM
-- **Alembic** — schema migrations
-- **Pydantic** — request/response validation
-- **pytest** — 48 tests against a real PostgreSQL instance
+- **PostgreSQL 16** — database, via Docker Compose
+- **SQLAlchemy 2.0 / Alembic** — ORM and migrations
+- **bcrypt** — password hashing
+- **python-jose** — JWT signing and verification
+- **slowapi** — rate limiting
+- **pytest** — full suite against a real database
 
 ## Quick start
 
-Requires Docker Desktop only.
-
 ```bash
-git clone https://github.com/Estherry-techstar/week3-postgres-api.git
-cd week3-postgres-api
+git clone https://github.com/Estherry-techstar/week4-jwt-auth.git
+cd week4-jwt-auth
 
 cp .env.example .env          # Windows: copy .env.example .env
+# then set JWT_SECRET_KEY:
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 
-docker compose up -d --build  # starts Postgres and the API, runs migrations
-docker compose exec api python seed.py
+docker compose up -d --build
 ```
 
-Open http://localhost:8000/docs
+Open http://localhost:8001/docs
 
-Authorize with the `X-API-Key` header using the value of `API_KEY` from your `.env` (default: `dev-secret-key`).
+1. `POST /auth/signup` with an email and password. The response is always a generic 202 — see [Security decisions](#security-decisions) for why it does not confirm whether the account was created.
+2. Click **Authorize**, enter the same credentials
+3. All `/candidates` endpoints now work
 
-Migrations run automatically on API startup, and the API waits for PostgreSQL's healthcheck before booting.
+## Authentication flow
 
-### Running the API outside Docker
+```
+signup ──▶ password hashed with bcrypt ──▶ stored (never the plaintext)
 
-To run the API locally against the containerised database — useful during development, since `--reload` picks up code changes:
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate        # macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-
-docker compose up -d db       # database only
-alembic upgrade head
-python seed.py
-uvicorn app.main:app --reload
+login  ──▶ password verified ──▶ signed JWT returned
+                                       │
+                                       ▼
+request ──▶ Authorization: Bearer <token>
+                    │
+                    ▼
+            signature + expiry checked
+                    │
+                    ▼
+            user loaded, is_active checked ──▶ endpoint runs
 ```
 
-Set `POSTGRES_HOST=localhost` in `.env` for this mode. Inside Docker the host is `db`, the Compose service name.
+| Endpoint | Auth | Rate limit |
+|---|---|---|
+| `GET /health` | none | none |
+| `POST /auth/signup` | none | 5/hour |
+| `POST /auth/login` | none | 5/minute |
+| `GET /auth/me` | JWT | none |
+| `POST /candidates` | JWT | none |
+| `GET /candidates` | JWT | none |
+| `GET /candidates/{id}` | JWT | none |
+| `PATCH /candidates/{id}` | JWT | none |
+| `DELETE /candidates/{id}` | JWT | none |
+
+## Security decisions
+
+**bcrypt, not a general-purpose hash.** bcrypt is deliberately slow and salts automatically, so identical passwords produce different hashes and a stolen database is expensive to crack. MD5 or SHA-256 would be fast, which is exactly wrong for passwords.
+
+**Passwords capped at 72 bytes.** bcrypt silently ignores anything beyond 72 bytes, so `"a"*100` and `"a"*200` would hash identically. bcrypt 5.0 raises rather than truncating, which would surface as a 500. The cap sits on the Pydantic schema, so it returns a clean 422 instead.
+
+**Login is timing-safe.** bcrypt verification takes ~250ms. Returning early when an email isn't found would make unknown emails respond in ~2ms and known emails in ~250ms — a measurable difference that turns login into an account-enumeration oracle. `authenticate_user` runs a dummy verification against a pre-computed hash when the email is unknown, so both paths take the same time. The `is_active` check happens after verification for the same reason.
+
+**Signup does not disclose whether an email is registered.** `POST /auth/signup` returns 202 with an identical body whether the address is new or already taken, and the duplicate branch runs the same dummy verification as login so latency does not leak what the status code no longer does. Returning 409 on a duplicate would let anyone test a list of addresses against the user table, and for a KYC or financial client, membership in that table is itself disclosure — it answers "does this person hold an account here?".
+
+The duplicate branch never touches the existing row. Quietly overwriting the stored hash to make the response look uniform would turn signup into account takeover. `test_duplicate_signup_does_not_change_the_existing_password` covers this.
+
+The existence check and the insert are separate statements, so two concurrent signups for the same address can both pass the check. The insert is wrapped in an `IntegrityError` handler that rolls back and returns the same generic 202, rather than surfacing a 500 that would be a rarer version of the same leak.
+
+**All auth failures return one identical 401.** Expired token, forged signature, deleted user, deactivated account — the same message. Distinct messages would tell an attacker which part of their guess was right.
+
+**Tokens carry only `sub` and `exp`.** A JWT is signed, not encrypted; anyone holding it can base64-decode the payload. Only the user id and expiry go in.
+
+**Every request loads the user from the database.** A self-contained token needs no lookup, but then it cannot be revoked before expiry. The lookup — one indexed primary-key read — is what makes `is_active = false` take effect immediately. This is tested in `test_token_for_deactivated_user_is_rejected`.
+
+**Rate limiting is a first layer, not a complete defence.** slowapi keys on client IP, so it does not stop a distributed attack, and behind a proxy every request appears to come from the proxy unless `X-Forwarded-For` is handled. Production would add per-account limits and exponential backoff.
+
+## Configuration
+
+`.env` is gitignored; `.env.example` documents the required keys.
+
+| Variable | Purpose |
+|---|---|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | database credentials |
+| `POSTGRES_HOST` | `db` inside Docker, `localhost` on the host |
+| `POSTGRES_PORT` | `5433` on the host, `5432` inside Docker |
+| `JWT_SECRET_KEY` | signs and verifies tokens — the most sensitive value here |
+| `JWT_ALGORITHM` | `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | token lifetime, default 30 |
+
+Generate a secret with `python -c "import secrets; print(secrets.token_urlsafe(32))"` — `secrets` uses the OS cryptographic source; `random` is predictable and unsuitable.
+
+The CI workflow uses a plaintext secret because it signs tokens for a throwaway database destroyed after each run. A real deployment would use GitHub encrypted secrets.
 
 ## Data model
 
-Two related tables in a one-to-many relationship.
+Three tables. `candidates` and `interviews` carry over from Week 3 in a one-to-many relationship; `users` is new.
 
 ```
-candidates                        interviews
-----------                        ----------
-id           PK                   id            PK
-full_name                         candidate_id  FK → candidates.id  ON DELETE CASCADE
-email        UNIQUE, indexed      scheduled_at
-role                              interviewer
-years_experience                  feedback
-stage        ENUM
-notes
-created_at   default now()
-updated_at   default now(), onupdate now()
+users                      candidates ──< interviews
+-----                      ----------     ----------
+id (PK)                    id (PK)        id (PK)
+email (UNIQUE, indexed)    ...            candidate_id (FK, CASCADE)
+hashed_password (60)                      ...
+is_active
+created_at
 ```
 
-A candidate has many interviews. The foreign key lives on `interviews` — the "many" side — because a relational column holds a single scalar value.
-
-### Design decisions
-
-**`ON DELETE CASCADE`** — an interview without a candidate is meaningless, so deleting a candidate removes their interviews atomically. This keeps `DELETE /candidates/{id}` returning 204 unconditionally, as it did before the migration. `RESTRICT` would have forced a contract change.
-
-**UNIQUE constraint on `email`** — previously enforced by a Python loop over a dict. The API still returns 409 with a friendly message, but the database now guarantees correctness even if application code is wrong.
-
-**Timestamps set by the database** — `server_default=func.now()` and `onupdate=func.now()` replace a manual `utcnow()` helper, so rows inserted by seed scripts or raw SQL get correct timestamps too. `timezone=True` preserves the timezone-aware datetimes the original API returned.
-
-**`stage` as a Postgres ENUM** — invalid stages are rejected by the database, not only by Pydantic.
-
-## What moved from application code into the database
-
-| Previously in Python | Now in PostgreSQL |
-|---|---|
-| `count(1)` id counter | `SERIAL` sequence |
-| `email_exists()` loop | `UNIQUE` constraint + index |
-| `utcnow()` set by hand | `DEFAULT now()` / `ON UPDATE` |
-| List slicing for pagination | `LIMIT` / `OFFSET` |
-| `needle in name.lower()` | `ILIKE` |
-| Manual cleanup of related rows | `ON DELETE CASCADE` |
-| Data lost on restart | Rows on disk in a named volume |
-
-Filtering and pagination now execute in the database rather than loading every row into Python and discarding most of them.
+`hashed_password` is `String(60)` because a bcrypt hash is always exactly 60 characters. `users` has no relationship to `candidates` — a user operates the tracker, they are not tracked by it.
 
 ## Tests
 
-48 tests run against a real PostgreSQL instance — not mocks, not SQLite.
+The suite runs against a real PostgreSQL instance.
 
 ```bash
 docker compose up -d db
 pytest -v
 ```
 
-`tests/conftest.py` provides an isolated `appdb_test` database. Each test runs inside a transaction that is rolled back on teardown, so tests cannot affect one another and every test starts from an empty table. This is also why the suite completes in about a second.
-
 | File | Covers |
 |---|---|
-| `tests/test_crud.py` | The data layer: create, read, update, delete, filtering, pagination, the UNIQUE constraint, and CASCADE deletion |
-| `tests/test_api.py` | The HTTP layer: 200, 201, 204, 401, 404, 409, and 422 paths, plus API-key authentication on every protected endpoint |
+| `tests/test_auth.py` | Hashing, salting, token round-trip, tampered tokens, signup, login, revocation, rate limiting |
+| `tests/test_api.py` | Candidate endpoints, all status codes, JWT enforcement |
+| `tests/test_crud.py` | Data layer, constraints, CASCADE |
 
-### Continuous integration
+Each test runs in a transaction that is rolled back on teardown, so every test starts from an empty database. An `autouse` fixture resets the rate limiter between tests, since its state is global.
 
-`.github/workflows/test.yml` runs on every push and pull request. It starts a PostgreSQL 16 service, applies migrations, **reverses them, reapplies them**, and then runs the suite.
-
-That up-down-up cycle caught a real bug on its first run. `downgrade()` dropped both tables but left the `stage_enum` type behind, so reapplying failed with `DuplicateObject`. Alembic's autogenerate creates enums implicitly as a side effect of `create_table` but does not write the matching `DROP TYPE`. Fixed with an explicit drop in `downgrade()`.
-
-A local database never surfaces this, because it only ever migrates forward.
-
-## Migrations
-
-```bash
-alembic upgrade head                              # apply all migrations
-alembic revision --autogenerate -m "description"  # generate after model changes
-alembic downgrade -1                              # roll back one migration
-alembic current                                   # show current revision
-```
-
-When running via Docker, migrations are applied automatically as part of the API container's startup command.
-
-Autogenerated migrations are drafts — review them before applying. Alembic detects added and removed tables and columns, but cannot infer renames or data transformations, and does not handle enum teardown (see above).
-
-## Persistence
-
-Data survives container restarts because PostgreSQL's data directory is mounted to a named Docker volume:
-
-```yaml
-volumes:
-  - pgdata:/var/lib/postgresql/data
-```
-
-To verify:
-
-```bash
-docker compose down      # destroys the containers
-docker compose up -d     # creates new ones
-curl -H "X-API-Key: dev-secret-key" http://localhost:8000/candidates
-```
-
-The seeded candidates are still present.
-
-To wipe the data as well:
-
-```bash
-docker compose down -v   # -v removes the volume
-```
-
-## Containerisation
-
-Both services are defined in `docker-compose.yml`:
-
-- **`db`** — PostgreSQL 16, with a `pg_isready` healthcheck
-- **`api`** — built from the `Dockerfile`, waits for `db` to report healthy via `depends_on: condition: service_healthy`
-
-The API image pins Python 3.12 rather than tracking the host's version, so the build is reproducible across machines. `requirements.txt` is copied and installed before the application code, so Docker's layer cache avoids reinstalling dependencies when only source files change.
-
-`.dockerignore` excludes `.venv/`, `.git/`, `__pycache__/`, and `.env` from the build context. Excluding `.env` matters: without it, real credentials would be baked into the image.
-
-## Configuration
-
-All configuration comes from environment variables. `.env` is gitignored; `.env.example` documents the required keys.
-
-| Variable | Purpose |
-|---|---|
-| `POSTGRES_USER` | database user |
-| `POSTGRES_PASSWORD` | database password |
-| `POSTGRES_DB` | database name |
-| `POSTGRES_HOST` | `db` inside Docker, `localhost` when running the API on the host |
-| `POSTGRES_PORT` | `5432` |
-| `API_KEY` | value expected in the `X-API-Key` header |
-| `TEST_DATABASE_URL` | connection string for the test database; defaults to a local `appdb_test` |
-
-`API_KEY` falls back to `dev-secret-key` so the project runs immediately after cloning. In a real deployment this fallback should be removed so a missing key fails at startup rather than silently accepting a publicly known value.
-
-## Endpoints
-
-| Method | Path | Auth | Notes |
-|---|---|---|---|
-| GET | `/health` | no | returns candidate count |
-| POST | `/candidates` | yes | 201, or 409 on duplicate email |
-| GET | `/candidates` | yes | filter by `stage`, search `q`, `limit`/`offset` |
-| GET | `/candidates/{id}` | yes | 404 if absent |
-| PATCH | `/candidates/{id}` | yes | partial update |
-| DELETE | `/candidates/{id}` | yes | 204; cascades to interviews |
+CI runs migrations forward, backward, and forward again against a clean PostgreSQL service, then runs the suite.
 
 ## Known limitations
 
-- Interviews have no HTTP endpoints yet; they are populated by the seed script and queried directly.
-- Candidates are hard-deleted. A production hiring system would soft-delete with a `deleted_at` column to preserve interview history for audit.
-- The test fixture builds the schema with `create_all` rather than by running migrations, so the tests exercise the models. CI covers migrations separately with the up-down-up cycle described above.
-- Dependencies are pinned with `>=` rather than exact versions. The Dockerfile pins the interpreter, which mitigates this, but a production project would use a lockfile.
+- **Signup gives the legitimate user no confirmation.** Because the response is uniform, someone who mistypes an existing address gets the same 202 as a successful registration. The standard fix is to move the real signal to the address itself: a confirmation email for new registrations, a "someone tried to register your address" notice with a reset link for duplicates. That needs a mail layer, which this project does not have yet.
+- No refresh tokens. When a 30-minute token expires the user logs in again.
+- No password reset or change flow.
+- No roles or permissions — every authenticated user has identical access.
+- Interviews still have no HTTP endpoints.
+- Rate limit state is in-memory, so it resets on restart and is not shared across replicas. Redis would fix both.

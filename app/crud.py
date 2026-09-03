@@ -10,6 +10,16 @@ from app.schemas import CandidateCreate, CandidateUpdate, UserCreate
 DUMMY_HASH = hash_password("dummy-password-for-timing-consistency")
 
 
+def dummy_verify(password: str = "dummy-password-for-timing-consistency") -> None:
+    """Spend one password verification's worth of time. Result discarded.
+
+    Called on branches where there's no real hash to check, so response
+    latency doesn't reveal whether an account exists. Both login (unknown
+    email) and signup (email already registered) rely on this.
+    """
+    verify_password(password, DUMMY_HASH)
+
+
 def email_exists(db: Session, email: str, exclude_id: int | None = None) -> bool:
     stmt = select(Candidate.id).where(func.lower(Candidate.email) == email.lower())
     if exclude_id is not None:
@@ -112,8 +122,7 @@ def authenticate_user(db: Session, email: str, password: str) -> User | None:
     user = get_user_by_email(db, email)
 
     if user is None:
-        # Dummy verification against a real hash to keep timing consistent.
-        verify_password(password, DUMMY_HASH)
+        dummy_verify(password)
         return None
 
     if not verify_password(password, user.hashed_password):

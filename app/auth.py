@@ -1,16 +1,10 @@
 """Password hashing and JWT creation/verification."""
-import os
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from dotenv import load_dotenv
 from jose import JWTError, jwt
 
-load_dotenv()
-
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "insecure-dev-key-change-me")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+from app.config import settings
 
 MAX_PASSWORD_BYTES = 72
 
@@ -32,22 +26,25 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(subject: str | int) -> str:
     """Create a signed JWT identifying the given user id."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.access_token_expire_minutes
+    )
     claims = {"sub": str(subject), "exp": expire}
-    return jwt.encode(claims, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(claims, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 def decode_access_token(token: str) -> int | None:
     """Return the user id from a valid token, or None if it is invalid or expired."""
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+        )
     except JWTError:
         return None
 
     subject = payload.get("sub")
     if subject is None:
         return None
-
     try:
         return int(subject)
     except ValueError:

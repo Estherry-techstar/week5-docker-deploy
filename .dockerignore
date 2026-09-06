@@ -2,4 +2,11 @@
 __pycache__/
 *.pyc
 .git/
+.github/
 .env
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+tests/
+README.md

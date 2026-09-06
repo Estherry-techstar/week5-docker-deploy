@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     postgres_db: str
     postgres_host: str = "localhost"
     postgres_port: int = 5432
+    postgres_sslmode: str = "prefer"
 
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
         return (
             f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            f"?sslmode={self.postgres_sslmode}"
         )
 
 

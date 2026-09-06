@@ -1,10 +1,13 @@
 """FastAPI application: the front desk that receives HTTP requests."""
+import logging
+
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app import crud
@@ -22,6 +25,8 @@ from app.schemas import (
     UserRead,
 )
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="Candidate Tracker API",
     description="PostgreSQL-backed CRUD service with JWT authentication.",
@@ -34,6 +39,26 @@ app = FastAPI(
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(OperationalError)
+async def database_unavailable(request: Request, exc: OperationalError) -> JSONResponse:
+    """Turn a lost database connection into a 503 instead of a 500 traceback.
+
+    A dropped connection is expected in normal operation -- failover,
+    maintenance windows, hitting the connection limit -- so it is not a bug in
+    this service and should not be reported as one. 503 also tells clients and
+    load balancers that retrying later is worthwhile, which 500 does not.
+
+    The exception text is logged but never returned: SQLAlchemy puts the
+    connection string, including the host and user, into the error message.
+    """
+    logger.error("Database unavailable: %s", exc)
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "Service temporarily unavailable."},
+    )
+
 
 # Single source of truth for the signup response. Both the "created" and the
 # "already exists" paths return this exact object, so the response body cannot

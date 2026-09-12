@@ -413,3 +413,68 @@ Confirm afterwards with `az group list --output table`.
 7. **No CI/CD to Azure** — `.github/workflows/test.yml` runs tests but does not
    deploy. Deployment is manual and therefore repeatable only by following this
    document.
+
+
+
+---
+
+## 12. Deployment status — blocked on subscription access
+
+**Status as of 2026-09-07: not deployed. Azure subscription disabled.**
+
+Section 5 has not been executed. Every prerequisite is in place — Azure CLI
+2.90.0 installed, authenticated, correct subscription selected — but the
+subscription cannot create resources:
+
+​```
+$ az account show --output table
+EnvironmentName  HomeTenantId                          IsDefault  Name            State     TenantDisplayName
+---------------  ------------------------------------  ---------  --------------  --------  -----------------
+AzureCloud       8d5fec8d-59a2-4e30-9079-2187e60adfdc  True       Esther Nnamani  Disabled  Ha-Shem Limited
+​```
+
+Subscription ID: `f2f054e1-a798-4581-8250-9a0d9c4c6c10`
+
+A disabled subscription rejects all resource creation, so the sequence stops at
+section 5.1 (`az group create`) and nothing downstream can be attempted.
+Enabling the subscription sits with the onboarding team rather than with me, so
+this has been raised through the week 5 submission notes.
+
+### Evidence to be added once access is granted
+
+- Container app FQDN
+- Resource group and resource names
+- `GET /health` response from the public endpoint
+- Startup log excerpt from `az containerapp logs show`
+
+Sections 1–11 need no changes; section 5 runs top to bottom as written.
+
+### Local verification in the interim
+
+This does not substitute for a deployed endpoint. It establishes that the
+artifact to be deployed is correct: the same image, the same startup command,
+and the same migration path that Azure will run.
+
+Rebuilt from an empty volume with `docker compose down -v && docker compose up -d --build`:
+
+​```
+$ docker compose logs api --tail 20
+week5_api  | INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+week5_api  | INFO  [alembic.runtime.migration] Will assume transactional DDL.
+week5_api  | INFO  [alembic.runtime.migration] Running upgrade  -> 3fede138a1af, create candidates and interviews tables
+week5_api  | INFO  [alembic.runtime.migration] Running upgrade 3fede138a1af -> e9c145d80f17, create users table
+week5_api  | INFO:     Started server process [8]
+week5_api  | INFO:     Waiting for application startup.
+week5_api  | INFO:     Application startup complete.
+week5_api  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+
+$ curl -s http://localhost:8001/health
+{"status":"ok","candidates":0}
+
+$ docker run --rm week5-docker-deploy-api whoami
+appuser
+​```
+
+`/health` queries the database, so a 200 confirms the API is running and
+connected rather than merely started. `whoami` confirms the container runs as an
+unprivileged user.
